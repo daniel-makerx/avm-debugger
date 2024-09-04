@@ -14,7 +14,7 @@ import {
 } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { AvmRuntime, IRuntimeBreakpoint } from './runtime';
-import { ProgramStackFrame } from './traceReplayEngine';
+import { FunctionStackFrame, ProgramStackFrame } from './traceReplayEngine';
 import { Subject } from 'await-notify';
 import * as algosdk from 'algosdk';
 import { FileAccessor } from './fileAccessor';
@@ -461,6 +461,13 @@ export class AvmDebugSession extends DebugSession {
               evaluateName: 'pc',
             },
             {
+              name: 'op',
+              value: frame.op(),
+              type: 'string',
+              variablesReference: 0,
+              evaluateName: 'op',
+            },
+            {
               name: 'stack',
               value: programState.stack.length === 0 ? '[]' : '[...]',
               type: 'array',
@@ -714,6 +721,14 @@ export class AvmDebugSession extends DebugSession {
                   type: 'uint64',
                   variablesReference: 0,
                   evaluateName: 'pc',
+                };
+              } else if (scope.specificState === 'op') {
+                rv = {
+                  name: 'op',
+                  value: frame.op(),
+                  type: 'string',
+                  variablesReference: 0,
+                  evaluateName: 'op',
                 };
               } else if (scope.specificState === 'stack') {
                 let index = key as number;
@@ -1188,7 +1203,7 @@ export class AvmDebugSession extends DebugSession {
 class ProgramStateScope {
   constructor(
     public readonly frameIndex: number,
-    public readonly specificState?: 'pc' | 'stack' | 'scratch',
+    public readonly specificState?: 'pc' | 'op' | 'stack' | 'scratch',
   ) {}
 
   public scopeString(): string {
@@ -1259,6 +1274,9 @@ function evaluateNameForScope(
 function evaluateNameToScope(name: string): [AvmValueScope, number | string] {
   if (name === 'pc') {
     return [new ProgramStateScope(-1, 'pc'), 0];
+  }
+  if (name === 'op') {
+    return [new ProgramStateScope(-1, 'op'), ''];
   }
   const stackMatches = /^stack\[(-?\d+)\]$/.exec(name);
   if (stackMatches) {

@@ -190,12 +190,21 @@ export class TraceReplayEngine {
     let length: number;
     do {
       length = this.stack.length;
-      const exceptionInfo = this.currentFrame().forward(this.stack);
-      if (exceptionInfo) {
-        return SteppingResult.exception(exceptionInfo);
-      }
-      if (this.stack.length === 0) {
-        return SteppingResult.end();
+      const currentFileName = this.currentFrame().sourceFile().name;
+      const currentLocation = this.currentFrame().sourceLocation();
+      let exceptionInfo;
+      while (
+        !exceptionInfo &&
+        currentLocation.line == this.currentFrame().sourceLocation().line &&
+        this.currentFrame().sourceFile().name == currentFileName
+      ) {
+        exceptionInfo = this.currentFrame().forward(this.stack);
+        if (exceptionInfo) {
+          return SteppingResult.exception(exceptionInfo);
+        }
+        if (this.stack.length === 0) {
+          return SteppingResult.end();
+        }
       }
     } while (this.stack.length < length);
     return SteppingResult.ok();
@@ -280,6 +289,9 @@ export abstract class TraceReplayStackFrame {
   public abstract backward(
     stack: TraceReplayStackFrame[],
   ): ExceptionInfo | void;
+  public getStack(): TraceReplayStackFrame[] {
+    return [this];
+  }
 }
 
 export class TopLevelTransactionGroupsFrame extends TraceReplayStackFrame {
@@ -724,6 +736,7 @@ export class ProgramStackFrame extends TraceReplayStackFrame {
   private initialAppState: AppState | undefined;
   private logicSigAddress: string | undefined;
   private blockingException: ExceptionInfo | undefined;
+  private funcStack: TraceReplayStackFrame[] = [];
 
   public state: ProgramState = { pc: 0, stack: [], scratch: new Map() };
 
@@ -753,6 +766,15 @@ export class ProgramStackFrame extends TraceReplayStackFrame {
       const lsigAccount = new algosdk.LogicSigAccount(lsigBytes);
       this.logicSigAddress = lsigAccount.address().toString();
     }
+    this.funcStack.push(
+      new FunctionStackFrame(
+        this.engine,
+        this,
+        this.name(),
+        this.pcSourceFile(),
+        this.pcSourceLocation(),
+      ),
+    );
   }
 
   public currentAppID(): bigint | undefined {
@@ -781,7 +803,28 @@ export class ProgramStackFrame extends TraceReplayStackFrame {
     return `${this.programType} program`;
   }
 
+  public op(): string {
+    const sourceInfo = this.engine.programHashToSource.get(this.programHash);
+    if (!sourceInfo) {
+      return '';
+    }
+    const location = sourceInfo.sourcemap.getLocationForPc(this.state.pc);
+    const nameIndex = location?.nameIndex;
+    if (nameIndex === undefined) {
+      return '';
+    }
+    return sourceInfo.sourcemap.names[nameIndex];
+  }
+
   public sourceFile(): FrameSource {
+    return this.pcSourceFile();
+  }
+
+  public sourceLocation(): FrameSourceLocation {
+    return this.pcSourceLocation();
+  }
+
+  private pcSourceFile(): FrameSource {
     const sourceInfo = this.engine.programHashToSource.get(this.programHash);
     if (!sourceInfo) {
       let name: string;
@@ -808,7 +851,7 @@ export class ProgramStackFrame extends TraceReplayStackFrame {
     };
   }
 
-  public sourceLocation(): FrameSourceLocation {
+  public pcSourceLocation(): FrameSourceLocation {
     const sourceInfo = this.engine.programHashToSource.get(this.programHash);
     if (!sourceInfo) {
       return { line: 0 };
@@ -821,6 +864,23 @@ export class ProgramStackFrame extends TraceReplayStackFrame {
       line: location.line,
       column: location.column,
     };
+  }
+
+  public getStack(): TraceReplayStackFrame[] {
+    const stack = this.funcStack.slice();
+    const last = stack.pop();
+    if (last !== undefined) {
+      stack.push(
+        new FunctionStackFrame(
+          this.engine,
+          this,
+          last.name(),
+          last.sourceFile(),
+          this.pcSourceLocation(),
+        ),
+      );
+    }
+    return [...stack];
   }
 
   public forward(stack: TraceReplayStackFrame[]): ExceptionInfo | void {
@@ -869,6 +929,22 @@ export class ProgramStackFrame extends TraceReplayStackFrame {
       return;
     }
 
+    const currentOp = this.op();
+    if (currentOp.startsWith('callsub')) {
+      const name = currentOp.substring('callsub'.length).trim();
+      this.funcStack.push(
+        new FunctionStackFrame(
+          this.engine,
+          this,
+          name,
+          this.pcSourceFile(),
+          this.pcSourceLocation(),
+        ),
+      );
+    }
+    if (currentOp.startsWith('retsub')) {
+      this.funcStack.pop();
+    }
     this.index++;
 
     if (this.index < this.programTrace.length) {
@@ -1019,6 +1095,34 @@ export class ProgramStackFrame extends TraceReplayStackFrame {
         this.initialAppState.clone(),
       );
     }
+  }
+}
+
+export class FunctionStackFrame extends TraceReplayStackFrame {
+  constructor(
+    engine: TraceReplayEngine, // REMOVE THIS
+    readonly program: ProgramStackFrame,
+    private readonly _name: string,
+    private readonly _sourceFile: FrameSource,
+    private readonly _sourceLocation: FrameSourceLocation,
+  ) {
+    super(engine);
+  }
+
+  public name(): string {
+    return this._name;
+  }
+  public sourceFile(): FrameSource {
+    return this._sourceFile;
+  }
+  public sourceLocation(): FrameSourceLocation {
+    return this._sourceLocation;
+  }
+  public forward(stack: TraceReplayStackFrame[]): ExceptionInfo | void {
+    throw new Error('not implemented');
+  }
+  public backward(stack: TraceReplayStackFrame[]): ExceptionInfo | void {
+    throw new Error('not implemented');
   }
 }
 

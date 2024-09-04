@@ -3,6 +3,7 @@ import { RuntimeEvents } from './debugSession';
 import { AppState } from './appState';
 import {
   FrameSourceLocation,
+  FunctionStackFrame,
   SteppingResultType,
   TraceReplayEngine,
   TraceReplayStackFrame,
@@ -196,31 +197,44 @@ export class AvmRuntime extends EventEmitter {
   }
 
   public stackLength(): number {
-    return this.engine.stack.length;
+    return this.getStack().length;
   }
 
   /**
    * Returns a 'stacktrace' where every frame is a TraceReplayStackFrame.
    */
   public stack(startFrame: number, endFrame: number): IRuntimeStack {
-    if (this.engine.stack.length < endFrame) {
-      endFrame = this.engine.stack.length;
-    }
-    const frames: TraceReplayStackFrame[] = [];
-    for (let i = startFrame; i < endFrame; i++) {
-      frames.push(this.engine.stack[i]);
+    const stack = this.getStack();
+    if (stack.length < endFrame) {
+      endFrame = stack.length;
     }
     return {
-      frames: frames,
-      count: this.engine.stack.length,
+      frames: stack.slice(startFrame, endFrame),
+      count: stack.length,
     };
   }
 
+  private getStack(): TraceReplayStackFrame[] {
+    const stack: TraceReplayStackFrame[] = [];
+    for (const frame of this.engine.stack) {
+      for (const frameStack of frame.getStack()) {
+        stack.push(frameStack);
+      }
+    }
+    return stack;
+  }
+
   public getStackFrame(index: number): TraceReplayStackFrame | undefined {
-    if (index < 0 || index >= this.engine.stack.length) {
+    const stack = this.getStack();
+    if (index < 0 || index >= stack.length) {
       return undefined;
     }
-    return this.engine.stack[index];
+    let frame = stack[index];
+    // HACK: return ProgramStackFrame for function stack frame
+    if (frame && frame instanceof FunctionStackFrame) {
+      frame = frame.program;
+    }
+    return frame;
   }
 
   /*
